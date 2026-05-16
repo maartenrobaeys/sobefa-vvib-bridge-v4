@@ -6,13 +6,17 @@ from datetime import datetime
 
 st.set_page_config(page_title="SOBEFA VV → IB Bridge V4", page_icon="📈", layout="wide")
 
-# Styling functie voor de tabel status
-def color_status(val):
-    if val == "SKIP ❌": color = '#ff4b4b' # Rood
-    elif val == "CAUTION ⚠": color = '#ffa500' # Oranje
-    elif val == "OK ✅": color = '#09ab3b' # Groen
-    else: color = 'white'
-    return f'color: {color}; font-weight: bold'
+# Functie voor de gradient kleuren in de Afwijking kolom
+def color_deviation(val):
+    try:
+        num = float(val.replace('%', ''))
+        # Groen bij 0, Rood bij > 1.9 of < -1.9
+        if abs(num) < 0.5: color = '#09ab3b' # Helder groen
+        elif abs(num) < 1.9: color = '#ffa500' # Oranje
+        else: color = '#ff4b4b' # Rood (SKIP)
+        return f'background-color: {color}; color: white; font-weight: bold'
+    except:
+        return ''
 
 st.title("📈 SOBEFA — VV → IB Bridge V4")
 st.markdown("### Intelligent Execution Layer (RSI 2-Day Strategy)")
@@ -27,16 +31,24 @@ stop_loss = st.sidebar.number_input("Stop Loss %", value=1.9)
 pos_size = portfolio_capital / max_positions
 st.sidebar.metric("Budget per positie", f"${pos_size:,.2f}")
 
-# Handmatige input voor nieuwe signalen (bijv: SSRM, SNEX, CRDO)
+# Handmatige input voor SSRM, SNEX, CRDO
 st.sidebar.header("🆕 Nieuwe Signalen")
 new_tickers_input = st.sidebar.text_input("Voeg tickers toe (gescheiden door komma)", "").upper()
 manual_tickers = [t.strip() for t in new_tickers_input.split(",") if t.strip()]
 
+def clean_vv_price(price_str):
+    """Herstelt de decimalen fout uit de VectorVest export"""
+    cleaned = price_str.replace('$', '').replace(',', '').strip()
+    price = float(cleaned)
+    # Correctie-logica: als de prijs onwaarschijnlijk hoog is (> 5000 voor deze stocks), 
+    # dan zijn de decimalen wss 100x verschoven.
+    if price > 2000: # Meeste aandelen in je PF zijn rond de $10 - $400
+        return price / 100
+    return price
+
 def reconstruct_portfolio(df):
     open_trades = {}
     if 'Description' not in df.columns: return open_trades
-    
-    # Filter uit: OBE (TP), PARR & SMBK (SL) en EHAB (delisted)
     blacklist = ['EHAB', 'OBE', 'PARR', 'SMBK'] 
     
     for _, row in df.iterrows():
@@ -44,12 +56,10 @@ def reconstruct_portfolio(df):
         if 'Buy' in desc:
             words = desc.split()
             try:
-                # Zoek ticker na 'of' en prijs na 'at'
                 symbol = words[words.index('of') + 1]
                 if symbol in blacklist: continue
-                price_str = words[words.index('at') + 1].replace('$', '').replace(',', '')
-                price = float(price_str)
-                open_trades[symbol] = price
+                raw_price = words[words.index('at') + 1]
+                open_trades[symbol] = clean_vv_price(raw_price)
             except: continue
         elif 'Sell' in desc:
             words = desc.split()
@@ -63,28 +73,18 @@ trade_log_file = st.file_uploader("Upload tradehistory.csv", type=["csv"])
 
 if trade_log_file or manual_tickers:
     try:
-        # Reconstructie uit CSV
         open_positions = {}
         if trade_log_file:
             df_raw = pd.read_csv(trade_log_file)
             open_positions = reconstruct_portfolio(df_raw)
         
-        # Voeg handmatige tickers toe die nog niet in de CSV staan
         for ticker in manual_tickers:
-            if ticker not in open_positions:
-                open_positions[ticker] = None # Prijs wordt live opgehaald
+            if ticker not in open_positions: open_positions[ticker] = None
 
         if open_positions:
             tickers = list(open_positions.keys())
-            with st.spinner("Live data ophalen via Yahoo Finance..."):
-                # Haal prijzen op
+            with st.spinner("Live data ophalen..."):
                 price_data = yf.download(tickers, period="1d", progress=False)['Close']
-                
-                # Afhandeling prijsdata
-                if price_data.empty:
-                    st.error("Kon geen prijsdata ophalen. Controleer de tickers.")
-                    st.stop()
-                
                 if len(tickers) == 1:
                     current_prices = {tickers: price_data.iloc[-1]}
                 else:
@@ -93,11 +93,8 @@ if trade_log_file or manual_tickers:
             tracker_data = []
             for ticker, vv_price in open_positions.items():
                 curr_price = current_prices.get(ticker)
-                
-                # EHAB Check: Als prijs ontbreekt (delisted/niet gevonden), overslaan
                 if curr_price is None or np.isnan(curr_price): continue
                 
-                # Referentieprijs bepalen (VV buy price of huidige prijs voor nieuwe signalen)
                 ref_price = vv_price if vv_price else curr_price
                 diff_pct = ((curr_price - ref_price) / ref_price) * 100
                 
@@ -105,7 +102,6 @@ if trade_log_file or manual_tickers:
                 if diff_pct > 1.9: status = "SKIP ❌"
                 elif diff_pct > 0.5: status = "CAUTION ⚠"
                 
-                # Berekening: Gehele getallen voor IB (geen decimalen voor aandelen)
                 shares = int(pos_size / curr_price)
                 
                 tracker_data.append({
@@ -120,26 +116,18 @@ if trade_log_file or manual_tickers:
                     "IB Target": round(curr_price * (1 + (profit_target/100)), 2)
                 })
             
-            # Weergave met de FIX voor 'applymap' -> nu 'map'
             final_df = pd.DataFrame(tracker_data)
             st.header("📊 Live Portfolio Overzicht")
+            # Toepassen van de gradient op de Afwijking kolom
             st.dataframe(
-                final_df.style.map(color_status, subset=['Status']),
-                use_container_width=True,
-                height=450
+                final_df.style.map(color_deviation, subset=['Afwijking']),
+                use_container_width=True
             )
 
-            # Export Sectie
             st.header("📤 IB Order Export")
             valid_buys = final_df[final_df["Status"] != "SKIP ❌"]
             if not valid_buys.empty:
                 buy_csv = valid_buys[["Ticker", "Shares (IB)"]].to_csv(index=False)
                 st.download_button("⬇ Download BUY CSV voor IB", buy_csv, "ib_buy_orders.csv", "text/csv")
-            else:
-                st.info("Geen trades beschikbaar voor export (alles staat op SKIP).")
-        else:
-            st.warning("Geen actieve posities gevonden.")
     except Exception as e:
-        st.error(f"Fout bij verwerking: {e}")
-else:
-    st.info("Upload de tradehistory.csv of voeg handmatig tickers toe in de zijbalk.")
+        st.error(f"Fout: {e}")
