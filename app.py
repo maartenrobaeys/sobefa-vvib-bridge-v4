@@ -6,30 +6,29 @@ from datetime import datetime
 
 st.set_page_config(page_title="SOBEFA VV → IB Bridge V4", page_icon="📈", layout="wide")
 
-# Functie voor dynamische opacity en kleurverloop
-def style_risk_columns(row):
+# Functie voor extreem subtiele opacity en zachte kleuren
+def style_subtle_risk(row):
     try:
         dev_val = float(str(row['Afwijking']).replace('%', ''))
         abs_dev = abs(dev_val)
         
-        # Bereken opacity (alpha) tussen 0.1 en 0.8 op basis van afwijking
-        # 1.9% is de kritieke grens voor SKIP
-        alpha = min(max(abs_dev / 1.9, 0.1), 0.8)
+        # Zeer lage opacity: tussen 0.05 en 0.3 (voorheen 0.8)
+        alpha = min(max(abs_dev / 1.9 * 0.3, 0.05), 0.3)
         
         if abs_dev < 0.5:
-            color = f'rgba(9, 171, 59, {alpha})' # Groen (OK)
+            color = f'rgba(9, 171, 59, {alpha})' # Zacht Groen
         elif abs_dev < 1.9:
-            color = f'rgba(255, 165, 0, {alpha})' # Oranje (CAUTION)
+            color = f'rgba(255, 165, 0, {alpha})' # Zacht Oranje
         else:
-            color = f'rgba(255, 75, 75, {alpha})' # Rood (SKIP)
+            color = f'rgba(255, 75, 75, {alpha})' # Zacht Rood
             
-        style = f'background-color: {color}; color: black; font-weight: bold'
+        style = f'background-color: {color}; color: #333; font-weight: normal'
         return [style if col in ['Afwijking', 'Status'] else '' for col in row.index]
     except:
         return ['' for _ in row.index]
 
-st.title("📈 SOBEFA — VV → IB Bridge V4")
-st.markdown("### Intelligent Execution Layer (RSI 2-Day Strategy)")
+st.title("📈 SOBEFA — VV → IB Bridge V4 (Subtle)")
+st.markdown("### Intelligent Execution Layer — RSI 2-Day Strategy")
 
 # Instellingen in de zijbalk
 st.sidebar.header("⚙ Portfolio Instellingen")
@@ -43,7 +42,7 @@ st.sidebar.metric("Budget per positie", f"${pos_size:,.2f}")
 
 # Handmatige input voor nieuwe signalen
 st.sidebar.header("🆕 Nieuwe Signalen")
-new_tickers_input = st.sidebar.text_input("Voeg tickers toe (gescheiden door komma)", "").upper()
+new_tickers_input = st.sidebar.text_input("Voeg tickers toe (bijv: SSRM, SNEX, CRDO)", "").upper()
 manual_tickers = [t.strip() for t in new_tickers_input.split(",") if t.strip()]
 
 def clean_vv_price(price_str):
@@ -57,7 +56,6 @@ def reconstruct_portfolio(df):
     open_trades = {}
     if 'Description' not in df.columns: return open_trades
     blacklist = ['EHAB', 'OBE', 'PARR', 'SMBK'] 
-    
     for _, row in df.iterrows():
         desc = str(row.get('Description', ''))
         if 'Buy' in desc:
@@ -84,7 +82,6 @@ if trade_log_file or manual_tickers:
         if trade_log_file:
             df_raw = pd.read_csv(trade_log_file)
             open_positions = reconstruct_portfolio(df_raw)
-        
         for ticker in manual_tickers:
             if ticker not in open_positions: open_positions[ticker] = None
 
@@ -97,7 +94,6 @@ if trade_log_file or manual_tickers:
             for ticker, vv_price in open_positions.items():
                 curr_price = current_prices.get(ticker)
                 if curr_price is None or np.isnan(curr_price): continue
-                
                 ref_price = vv_price if vv_price else curr_price
                 diff_pct = ((curr_price - ref_price) / ref_price) * 100
                 
@@ -105,35 +101,31 @@ if trade_log_file or manual_tickers:
                 if diff_pct > 1.9: status = "SKIP ❌"
                 elif diff_pct > 0.5: status = "CAUTION ⚠"
                 
-                # Positie voortgang: waar staan we tussen -1.9% en +6%?
-                # We schalen dit naar een waarde tussen 0 en 100 voor een visuele balk
-                progress = min(max((diff_pct + stop_loss) / (profit_target + stop_loss) * 100, 0), 100)
+                # SL Progress: 0% bij entry, 100% bij -1.9%
+                sl_prog = min(max(diff_pct / -stop_loss * 100, 0), 100) if diff_pct < 0 else 0
+                # TP Progress: 0% bij entry, 100% bij +6%
+                tp_prog = min(max(diff_pct / profit_target * 100, 0), 100) if diff_pct > 0 else 0
                 
                 tracker_data.append({
                     "Ticker": ticker,
-                    "VV Buy Price": f"${ref_price:.2f}" if vv_price else "NIEUW",
-                    "Live Price": f"${curr_price:.2f}",
+                    "VV Buy": f"${ref_price:.2f}" if vv_price else "NIEUW",
+                    "Live": f"${curr_price:.2f}",
                     "Afwijking": f"{diff_pct:.2f}%",
                     "Status": status,
-                    "Positie Tracker": progress,
-                    "Shares (IB)": int(pos_size / curr_price),
+                    "Track SL": sl_prog,
+                    "Track TP": tp_prog,
+                    "Shares": int(pos_size / curr_price),
                     "Allocatie": f"${(int(pos_size / curr_price) * curr_price):,.2f}"
                 })
             
             final_df = pd.DataFrame(tracker_data)
             st.header("📊 Live Portfolio Overzicht")
             
-            # Tabel weergeven met de nieuwe gradient styling en een progress bar
             st.dataframe(
-                final_df.style.apply(style_risk_columns, axis=1),
+                final_df.style.apply(style_subtle_risk, axis=1),
                 column_config={
-                    "Positie Tracker": st.column_config.ProgressColumn(
-                        "Track (SL ↔ TP)",
-                        help="Visuele positie tussen -1.9% Stop Loss en +6% Take Profit",
-                        format="%.0f%%",
-                        min_value=0,
-                        max_value=100,
-                    )
+                    "Track SL": st.column_config.ProgressColumn("📉 Track SL", help="Richting -1.9%", format="%.0f%%", min_value=0, max_value=100, color="red"),
+                    "Track TP": st.column_config.ProgressColumn("🚀 Track TP", help="Richting +6.0%", format="%.0f%%", min_value=0, max_value=100, color="green")
                 },
                 use_container_width=True
             )
@@ -141,7 +133,7 @@ if trade_log_file or manual_tickers:
             st.header("📤 IB Order Export")
             valid_buys = final_df[final_df["Status"] != "SKIP ❌"]
             if not valid_buys.empty:
-                buy_csv = valid_buys[["Ticker", "Shares (IB)"]].to_csv(index=False)
+                buy_csv = valid_buys[["Ticker", "Shares"]].to_csv(index=False)
                 st.download_button("⬇ Download BUY CSV voor IB", buy_csv, "ib_buy_orders.csv", "text/csv")
     except Exception as e:
         st.error(f"Fout: {e}")
