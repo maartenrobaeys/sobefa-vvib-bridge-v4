@@ -22,15 +22,17 @@ st.sidebar.metric("Positiegrootte per trade", f"${position_size_usd:,.2f}")
 # Functie om portfolio te reconstrueren uit de tradehistory.csv
 def reconstruct_portfolio(df):
     open_trades = {}
-    # We zoeken naar "Buy" en "Sell" acties in de Description kolom
+    if 'Description' not in df.columns:
+        return open_trades
+        
     for _, row in df.iterrows():
         desc = str(row.get('Description', ''))
         if 'Buy' in desc:
             words = desc.split()
             try:
-                # Zoek ticker na 'of' en prijs na 'at'
                 symbol = words[words.index('of') + 1]
-                price = float(words[words.index('at') + 1].replace('$', '').replace(',', ''))
+                price_str = words[words.index('at') + 1].replace('$', '').replace(',', '')
+                price = float(price_str)
                 open_trades[symbol] = price
             except: continue
         elif 'Sell' in desc:
@@ -46,47 +48,63 @@ st.header("📂 Upload VectorVest Trade History")
 trade_log_file = st.file_uploader("Sleep tradehistory.csv hierheen", type=["csv"])
 
 if trade_log_file:
-    df_raw = pd.read_csv(trade_log_file)
-    st.success("Data ingeladen!")
-    
-    open_positions = reconstruct_portfolio(df_raw)
-    
-    if open_positions:
-        st.header("📊 Live Portfolio Tracker")
-        tickers = list(open_positions.keys())
+    try:
+        df_raw = pd.read_csv(trade_log_file)
+        st.success("Data ingeladen!")
         
-        # Haal prijzen op via Yahoo Finance
-        with st.spinner("Prijzen ophalen..."):
-            data = yf.download(tickers, period="1d")['Close'].iloc[-1]
-            current_prices = data.to_dict() if len(tickers) > 1 else {tickers: data}
+        open_positions = reconstruct_portfolio(df_raw)
+        
+        if open_positions:
+            st.header("📊 Live Portfolio Tracker")
+            tickers = list(open_positions.keys())
+            
+            with st.spinner("Live prijzen ophalen..."):
+                # Verbeterde prijs-ophaling voor zowel enkele als meerdere tickers
+                price_data = yf.download(tickers, period="1d", progress=False)['Close']
+                if len(tickers) == 1:
+                    current_prices = {tickers: price_data.iloc[-1]} if not price_data.empty else {}
+                else:
+                    current_prices = price_data.iloc[-1].to_dict()
 
-        tracker_data = []
-        for ticker, vv_price in open_positions.items():
-            curr_price = current_prices.get(ticker, vv_price)
-            diff_pct = ((curr_price - vv_price) / vv_price) * 100
-            
-            # De cruciale SKIP logica
-            status = "OK"
-            if diff_pct > 1.9: status = "SKIP ❌"
-            elif diff_pct > 0.5: status = "CAUTION ⚠"
-            
-            tracker_data.append({
-                "Ticker": ticker,
-                "VV Prijs": round(vv_price, 2),
-                "Live Prijs": round(curr_price, 2),
-                "Afwijking %": round(diff_pct, 2),
-                "Status": status,
-                "Shares": int(position_size_usd / curr_price),
-                "IB Stop": round(curr_price * (1 - (stop_loss_pct/100)), 2),
-                "IB Target": round(curr_price * (1 + (profit_target_pct/100)), 2)
-            })
-            
-        st.table(pd.DataFrame(tracker_data))
+            tracker_data = []
+            for ticker, vv_price in open_positions.items():
+                curr_price = current_prices.get(ticker)
+                
+                # Check of prijs geldig is voor we gaan rekenen (voorkomt de ValueError)
+                if curr_price is None or np.isnan(curr_price) or curr_price <= 0:
+                    curr_price = vv_price # Fallback naar VV prijs
+                
+                diff_pct = ((curr_price - vv_price) / vv_price) * 100
+                
+                status = "OK"
+                if diff_pct > 1.9: status = "SKIP ❌"
+                elif diff_pct > 0.5: status = "CAUTION ⚠"
+                
+                # Bereken shares veilig
+                shares = int(position_size_usd / curr_price) if curr_price > 0 else 0
+                
+                tracker_data.append({
+                    "Ticker": ticker,
+                    "VV Prijs": round(vv_price, 2),
+                    "Live Prijs": round(curr_price, 2),
+                    "Afwijking %": round(diff_pct, 2),
+                    "Status": status,
+                    "Shares": shares,
+                    "IB Stop": round(curr_price * (1 - (stop_loss_pct/100)), 2),
+                    "IB Target": round(curr_price * (1 + (profit_target_pct/100)), 2)
+                })
+                
+            st.table(pd.DataFrame(tracker_data))
 
-        # IB Export sectie
-        st.header("📤 IB Order Export")
-        buy_orders = pd.DataFrame(tracker_data)
-        buy_csv = buy_orders[buy_orders["Status"] != "SKIP ❌"][["Ticker", "Shares"]].to_csv(index=False)
-        st.download_button("⬇ Download BUY CSV", buy_csv, "ib_buy_orders.csv", "text/csv")
-    else:
-        st.warning("Geen open posities gevonden. Check je export instellingen in VV.")
+            st.header("📤 IB Order Export")
+            buy_orders = pd.DataFrame(tracker_data)
+            valid_buys = buy_orders[buy_orders["Status"] != "SKIP ❌"]
+            if not valid_buys.empty:
+                buy_csv = valid_buys[["Ticker", "Shares"]].to_csv(index=False)
+                st.download_button("⬇ Download BUY CSV", buy_csv, "ib_buy_orders.csv", "text/csv")
+            else:
+                st.info("Geen geldige kooporders (alles staat op SKIP).")
+        else:
+            st.warning("Geen open posities gevonden in dit bestand.")
+    except Exception as e:
+        st.error(f"Er ging iets mis bij het verwerken van het bestand: {e}")
