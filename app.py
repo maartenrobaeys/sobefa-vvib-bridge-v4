@@ -44,7 +44,3 @@ if trade_log_file:
         st.download_button(label="⬇ Download STOP CSV", data="Symbol,StopPrice,OrderType\nAAPL,150.50,STP", file_name="ib_stop_orders.csv", mime="text/csv")
 
 st.info("Handleiding: Upload tradehistory.csv -> Controleer data -> Download CSV -> Importeer in IB.")
-,
-,
-,
-,
