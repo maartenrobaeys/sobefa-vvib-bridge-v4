@@ -2,35 +2,27 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import yfinance as yf
+import plotly.express as px
 from datetime import datetime
 
 st.set_page_config(page_title="SOBEFA VV → IB Bridge V4", page_icon="📈", layout="wide")
 
-# Functie voor extreem subtiele opacity en zachte kleuren
+# Subtiele styling functie
 def style_subtle_risk(row):
     try:
         dev_val = float(str(row['Afwijking']).replace('%', ''))
         abs_dev = abs(dev_val)
-        
-        # Zeer lage opacity: tussen 0.05 en 0.3 (voorheen 0.8)
         alpha = min(max(abs_dev / 1.9 * 0.3, 0.05), 0.3)
-        
-        if abs_dev < 0.5:
-            color = f'rgba(9, 171, 59, {alpha})' # Zacht Groen
-        elif abs_dev < 1.9:
-            color = f'rgba(255, 165, 0, {alpha})' # Zacht Oranje
-        else:
-            color = f'rgba(255, 75, 75, {alpha})' # Zacht Rood
-            
-        style = f'background-color: {color}; color: #333; font-weight: normal'
-        return [style if col in ['Afwijking', 'Status'] else '' for col in row.index]
-    except:
-        return ['' for _ in row.index]
+        if abs_dev < 0.5: color = f'rgba(9, 171, 59, {alpha})'
+        elif abs_dev < 1.9: color = f'rgba(255, 165, 0, {alpha})'
+        else: color = f'rgba(255, 75, 75, {alpha})'
+        return [f'background-color: {color}; color: #333' if col in ['Afwijking', 'Status'] else '' for col in row.index]
+    except: return ['' for _ in row.index]
 
-st.title("📈 SOBEFA — VV → IB Bridge V4 (Subtle)")
+st.title("📈 SOBEFA — VV → IB Bridge V4")
 st.markdown("### Intelligent Execution Layer — RSI 2-Day Strategy")
 
-# Instellingen in de zijbalk
+# Zijbalk met compounding-input
 st.sidebar.header("⚙ Portfolio Instellingen")
 portfolio_capital = st.sidebar.number_input("Totaal Budget IB ($)", min_value=1000, value=10000, step=500)
 max_positions = st.sidebar.slider("Max posities", 1, 20, 10)
@@ -40,7 +32,6 @@ stop_loss = st.sidebar.number_input("Stop Loss %", value=1.9)
 pos_size = portfolio_capital / max_positions
 st.sidebar.metric("Budget per positie", f"${pos_size:,.2f}")
 
-# Handmatige input voor nieuwe signalen
 st.sidebar.header("🆕 Nieuwe Signalen")
 new_tickers_input = st.sidebar.text_input("Voeg tickers toe (bijv: SSRM, SNEX, CRDO)", "").upper()
 manual_tickers = [t.strip() for t in new_tickers_input.split(",") if t.strip()]
@@ -63,8 +54,7 @@ def reconstruct_portfolio(df):
             try:
                 symbol = words[words.index('of') + 1]
                 if symbol in blacklist: continue
-                raw_price = words[words.index('at') + 1]
-                open_trades[symbol] = clean_vv_price(raw_price)
+                open_trades[symbol] = clean_vv_price(words[words.index('at') + 1])
             except: continue
         elif 'Sell' in desc:
             words = desc.split()
@@ -101,39 +91,41 @@ if trade_log_file or manual_tickers:
                 if diff_pct > 1.9: status = "SKIP ❌"
                 elif diff_pct > 0.5: status = "CAUTION ⚠"
                 
-                # SL Progress: 0% bij entry, 100% bij -1.9%
                 sl_prog = min(max(diff_pct / -stop_loss * 100, 0), 100) if diff_pct < 0 else 0
-                # TP Progress: 0% bij entry, 100% bij +6%
                 tp_prog = min(max(diff_pct / profit_target * 100, 0), 100) if diff_pct > 0 else 0
                 
                 tracker_data.append({
-                    "Ticker": ticker,
-                    "VV Buy": f"${ref_price:.2f}" if vv_price else "NIEUW",
-                    "Live": f"${curr_price:.2f}",
-                    "Afwijking": f"{diff_pct:.2f}%",
-                    "Status": status,
-                    "Track SL": sl_prog,
-                    "Track TP": tp_prog,
-                    "Shares": int(pos_size / curr_price),
-                    "Allocatie": f"${(int(pos_size / curr_price) * curr_price):,.2f}"
+                    "Ticker": ticker, "VV Buy": f"${ref_price:.2f}", "Live": f"${curr_price:.2f}",
+                    "Afwijking": f"{diff_pct:.2f}%", "Status": status,
+                    "Track SL": sl_prog, "Track TP": tp_prog, "Shares": int(pos_size / curr_price)
                 })
             
-            final_df = pd.DataFrame(tracker_data)
             st.header("📊 Live Portfolio Overzicht")
-            
             st.dataframe(
-                final_df.style.apply(style_subtle_risk, axis=1),
+                pd.DataFrame(tracker_data).style.apply(style_subtle_risk, axis=1),
                 column_config={
-                    "Track SL": st.column_config.ProgressColumn("📉 Track SL", help="Richting -1.9%", format="%.0f%%", min_value=0, max_value=100, color="red"),
-                    "Track TP": st.column_config.ProgressColumn("🚀 Track TP", help="Richting +6.0%", format="%.0f%%", min_value=0, max_value=100, color="green")
-                },
-                use_container_width=True
+                    "Track SL": st.column_config.ProgressColumn("📉 Track SL", format="%.0f%%", min_value=0, max_value=100, color="red"),
+                    "Track TP": st.column_config.ProgressColumn("🚀 Track TP", format="%.0f%%", min_value=0, max_value=100, color="green")
+                }, use_container_width=True
             )
 
-            st.header("📤 IB Order Export")
-            valid_buys = final_df[final_df["Status"] != "SKIP ❌"]
-            if not valid_buys.empty:
-                buy_csv = valid_buys[["Ticker", "Shares"]].to_csv(index=False)
-                st.download_button("⬇ Download BUY CSV voor IB", buy_csv, "ib_buy_orders.csv", "text/csv")
+        # --- NIEUW: COMPOUND GROWTH SIMULATION ---
+        st.markdown("---")
+        st.header("📈 CAGR & Compounding Simulator")
+        col1, col2 = st.columns(2)
+        with col1:
+            years = st.slider("Looptijd in jaren", 1, 30, 20)
+            target_cagr = st.slider("Verwachte CAGR %", 1.0, 30.0, 10.7) # 10.7 is de 30-jarige VV RSI-historie [1]
+        
+        capital_curve = []
+        cap = portfolio_capital
+        for year in range(years + 1):
+            capital_curve.append({"Jaar": year, "Kapitaal": cap})
+            cap *= (1 + (target_cagr / 100))
+        
+        fig = px.line(pd.DataFrame(capital_curve), x="Jaar", y="Kapitaal", 
+                      title=f"Projectie: Groei naar ${(cap/(1 + target_cagr/100)):,.0f} over {years} jaar")
+        st.plotly_chart(fig, use_container_width=True)
+
     except Exception as e:
         st.error(f"Fout: {e}")
