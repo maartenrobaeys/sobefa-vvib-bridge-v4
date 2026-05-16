@@ -7,7 +7,7 @@ from datetime import datetime
 
 st.set_page_config(page_title="SOBEFA VV → IB Bridge V4", page_icon="📈", layout="wide")
 
-# Subtiele styling functie
+# Functie voor subtiele opacity en zachte kleuren
 def style_subtle_risk(row):
     try:
         dev_val = float(str(row['Afwijking']).replace('%', ''))
@@ -22,7 +22,7 @@ def style_subtle_risk(row):
 st.title("📈 SOBEFA — VV → IB Bridge V4")
 st.markdown("### Intelligent Execution Layer — RSI 2-Day Strategy")
 
-# Zijbalk met compounding-input
+# Instellingen in de zijbalk
 st.sidebar.header("⚙ Portfolio Instellingen")
 portfolio_capital = st.sidebar.number_input("Totaal Budget IB ($)", min_value=1000, value=10000, step=500)
 max_positions = st.sidebar.slider("Max posities", 1, 20, 10)
@@ -32,6 +32,7 @@ stop_loss = st.sidebar.number_input("Stop Loss %", value=1.9)
 pos_size = portfolio_capital / max_positions
 st.sidebar.metric("Budget per positie", f"${pos_size:,.2f}")
 
+# Handmatige input voor nieuwe signalen
 st.sidebar.header("🆕 Nieuwe Signalen")
 new_tickers_input = st.sidebar.text_input("Voeg tickers toe (bijv: SSRM, SNEX, CRDO)", "").upper()
 manual_tickers = [t.strip() for t in new_tickers_input.split(",") if t.strip()]
@@ -93,11 +94,18 @@ if trade_log_file or manual_tickers:
                 
                 sl_prog = min(max(diff_pct / -stop_loss * 100, 0), 100) if diff_pct < 0 else 0
                 tp_prog = min(max(diff_pct / profit_target * 100, 0), 100) if diff_pct > 0 else 0
+                shares = int(pos_size / curr_price)
                 
                 tracker_data.append({
-                    "Ticker": ticker, "VV Buy": f"${ref_price:.2f}", "Live": f"${curr_price:.2f}",
-                    "Afwijking": f"{diff_pct:.2f}%", "Status": status,
-                    "Track SL": sl_prog, "Track TP": tp_prog, "Shares": int(pos_size / curr_price)
+                    "Ticker": ticker, 
+                    "VV Buy": f"${ref_price:.2f}", 
+                    "Live": f"${curr_price:.2f}",
+                    "Afwijking": f"{diff_pct:.2f}%", 
+                    "Status": status,
+                    "Track SL": sl_prog, 
+                    "Track TP": tp_prog, 
+                    "Shares": shares,
+                    "Allocatie": f"${(shares * curr_price):,.2f}" # Kolom teruggezet
                 })
             
             st.header("📊 Live Portfolio Overzicht")
@@ -109,13 +117,12 @@ if trade_log_file or manual_tickers:
                 }, use_container_width=True
             )
 
-        # --- NIEUW: COMPOUND GROWTH SIMULATION ---
         st.markdown("---")
         st.header("📈 CAGR & Compounding Simulator")
         col1, col2 = st.columns(2)
         with col1:
             years = st.slider("Looptijd in jaren", 1, 30, 20)
-            target_cagr = st.slider("Verwachte CAGR %", 1.0, 30.0, 10.7) # 10.7 is de 30-jarige VV RSI-historie [1]
+            target_cagr = st.slider("Verwachte CAGR %", 1.0, 30.0, 10.7)
         
         capital_curve = []
         cap = portfolio_capital
